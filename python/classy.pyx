@@ -126,6 +126,9 @@ cdef class Class:
         self.output_init = False
         self._pars = {}
         self.fc.size=0
+        self.fc.name = NULL
+        self.fc.value = NULL
+        self.fc.read = NULL
         self.fc.filename = <char*>malloc(sizeof(char)*30)
         assert(self.fc.filename!=NULL)
         dumc = "NOFILE"
@@ -135,6 +138,9 @@ cdef class Class:
 
     # Set up the dictionary
     def set(self,*pars,**kars):
+        # Parameter updates must drop previous C allocations before re-computing.
+        if len(self.ncp) != 0:
+            self.struct_cleanup()
         if len(pars)==1:
             self._pars.update(dict(pars[0]))
         elif len(pars)!=0:
@@ -144,19 +150,32 @@ cdef class Class:
         return True
 
     def empty(self):
+        if len(self.ncp) != 0:
+            self.struct_cleanup()
         self._pars = {}
         self.ready = False
+
+    cdef void _free_file_content(self):
+        if self.fc.name != NULL:
+            free(self.fc.name)
+            self.fc.name = NULL
+        if self.fc.value != NULL:
+            free(self.fc.value)
+            self.fc.value = NULL
+        if self.fc.read != NULL:
+            free(self.fc.read)
+            self.fc.read = NULL
+        self.fc.size = 0
 
     # Create an equivalent of the parameter file. Non specified values will be
     # taken at their default (in Class)
     def _fillparfile(self):
         cdef char* dumc
 
-        if self.fc.size!=0:
-            free(self.fc.name)
-            free(self.fc.value)
-            free(self.fc.read)
+        self._free_file_content()
         self.fc.size = len(self._pars)
+        if self.fc.size == 0:
+            return
         self.fc.name = <FileArg*> malloc(sizeof(FileArg)*len(self._pars))
         assert(self.fc.name!=NULL)
 
@@ -181,8 +200,6 @@ cdef class Class:
 
     # Called at the end of a run, to free memory
     def struct_cleanup(self):
-        if self.ready == _FALSE_:
-             return
         if "lensing" in self.ncp:
             lensing_free(&self.le)
         if "spectra" in self.ncp:
@@ -201,6 +218,7 @@ cdef class Class:
             thermodynamics_free(&self.th)
         if "background" in self.ncp:
             background_free(&self.ba)
+        self.ncp = set()
         self.ready = False
 
     def _check_task_dependency(self, level):
@@ -302,6 +320,10 @@ cdef class Class:
         # Otherwise, proceed with the normal computation.
         self.ready = False
 
+        # If a previous run left partially initialized modules, clear them first.
+        if len(self.ncp) != 0:
+            self.struct_cleanup()
+
         # Equivalent of writing a parameter file
         self._fillparfile()
 
@@ -353,6 +375,8 @@ cdef class Class:
         if "perturb" in level:
             if perturb_init(&(self.pr), &(self.ba),
                             &(self.th), &(self.pt)) == _FAILURE_:
+                # perturb_init can fail after allocating collision tables.
+                perturbations_collision_free(&(self.ba), &(self.pt))
                 self.struct_cleanup()
                 raise CosmoComputationError(self.pt.error_message)
             self.ncp.add("perturb")

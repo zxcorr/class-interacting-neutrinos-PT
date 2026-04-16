@@ -267,6 +267,7 @@ cdef extern from "class.h":
     void transfer_free(void*)
     void primordial_free(void*)
     void perturb_free(void*)
+    int perturbations_collision_free(void*,void*)
     void thermodynamics_free(void*)
     void background_free(void*)
     void nonlinear_free(void*)

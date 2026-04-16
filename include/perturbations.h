@@ -389,11 +389,17 @@ struct perturbs
   //@}
 
   // DC: HERE!
-  int num_q_collision;
+  int num_q_collision;   /**< number of q-bins in collision table */
+  int num_ell_collision; /**< number of ell-values in collision table [AM/DC] */
   int * ell;
   double * q_collision;
   double * C_ell;
   double * ddC_ell;
+
+  /** [AM/DC] C_ell_ncdm[n_ncdm][l * q_size_ncdm + index_q]: collision table
+   *  re-sampled from the collision q-grid onto the perturbation q-grid, one
+   *  entry per ncdm species. Allocated and filled in perturb_collision_interpolate_ncdm(). */
+  double ** C_ell_ncdm;
 
   int * ell_2;
   double * alpha_ell;
@@ -857,7 +863,10 @@ extern "C" {
   int perturb_collision_alpha_ell(struct precision * ppr,
                                   struct perturbs * ppt);
 
-  int perturbations_collision_free(struct perturbs * ppt);
+  int perturb_collision_interpolate_ncdm(struct background * pba,
+                                         struct perturbs * ppt);
+
+  int perturbations_collision_free(struct background * pba, struct perturbs * ppt);
 
 #ifdef __cplusplus
 }

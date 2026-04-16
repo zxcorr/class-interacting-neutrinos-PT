@@ -163,16 +163,41 @@ int perturb_init(
               "your radiation_streaming_approximation is set to %d, out of range defined in perturbations.h",ppr->radiation_streaming_approximation);
 
   // DC: HERE!
+  ppt->num_q_collision = 0;
+  ppt->num_ell_collision = 0;
+  ppt->q_collision = NULL;
+  ppt->ell = NULL;
+  ppt->C_ell = NULL;
+  ppt->ddC_ell = NULL;
+  ppt->ell_2 = NULL;
+  ppt->alpha_ell = NULL;
+  ppt->C_ell_ncdm = NULL; /* [AM/DC] ensure safe free even if not allocated */
+
   // As long there is interacting neutrinos, always import collision terms!
   if (pba->interacting_nu!=0.){
-    class_call(perturb_collision_alpha_ell(ppr,ppt),
-               pth->error_message,
-               pth->error_message);
+    if (perturb_collision_C_ell(ppr,pba,ppt) == _FAILURE_) {
+      perturbations_collision_free(pba,ppt);
+      return _FAILURE_;
+    }
 
-    class_call(perturb_collision_C_ell(ppr,pba,ppt),
-               pth->error_message,
-               pth->error_message);
+    if (perturb_collision_alpha_ell(ppr,ppt) == _FAILURE_) {
+      perturbations_collision_free(pba,ppt);
+      return _FAILURE_;
+    }
 
+    if ((ppt->num_q_collision < 1) || (ppt->num_ell_collision < 5)) {
+      perturbations_collision_free(pba,ppt);
+      class_stop(ppt->error_message,
+                 "invalid collision tables: need at least one q-bin and ell up to 4, got num_q=%d num_ell=%d",
+                 ppt->num_q_collision,
+                 ppt->num_ell_collision);
+    }
+
+    /* [AM/DC] Build C_ell_ncdm: re-sample collision table onto perturbation q-grid */
+    if (perturb_collision_interpolate_ncdm(pba,ppt) == _FAILURE_) {
+      perturbations_collision_free(pba,ppt);
+      return _FAILURE_;
+    }
   }
 
   if (pba->has_ur == _TRUE_) {
@@ -455,9 +480,9 @@ int perturb_init(
 
   // DC: HERE!
   if (pba->interacting_nu!=0.){
-    class_call_parallel(perturbations_collision_free(ppt),
-             ppt->error_message,
-             ppt->error_message);
+    class_call(perturbations_collision_free(pba,ppt),
+               ppt->error_message,
+               ppt->error_message);
   }
 
   return _SUCCESS_;
@@ -3993,16 +4018,18 @@ int perturb_vector_init(
       /* -- case of switching off neutrino TCA
          approximation. Provide correct initial conditions to new set
          of variables */
+      /* [AM/DC] Bug fix: compute tau_ur and tau_ncdm separately so that tau_ncdm
+         uses Gamma_ncdm1 (not Gamma_ur) when both species are present */
       if (pba->interacting_nu!=0){
         if (pba->has_ur==_TRUE_){
-          tau_nu = 1./(ppw->pvecback[pba->index_bg_Gamma_ur]);
+          tau_ur = 1./(ppw->pvecback[pba->index_bg_Gamma_ur]);
+          tau_nu = tau_ur;
         }
-        if ((pba->has_ur==_FALSE_)&&(pba->has_ncdm==_TRUE_)){
-          tau_nu = 1./(ppw->pvecback[pba->index_bg_Gamma_ncdm1]);
+        if (pba->has_ncdm==_TRUE_){
+          tau_ncdm = 1./(ppw->pvecback[pba->index_bg_Gamma_ncdm1]);
+          if (pba->has_ur==_FALSE_) tau_nu = tau_ncdm;
         }
       }
-      tau_ur = tau_nu;
-      tau_ncdm = tau_nu;
 
       // TCA neutrinos only exists in the interacting case
       if (pba->interacting_nu!=0.){
@@ -4126,13 +4153,15 @@ int perturb_vector_init(
                       ppw->pv->y[ppw->pv->index_pt_psi0_ncdm1+index_pt-index_q*(ppv->l_max_ncdm[n_ncdm]-l_max_nu_tca)];
                   }
                   else if (l==2){
+                  /* [AM/DC] use pre-interpolated C_ell_ncdm[l*nq+index_q] (Bug fix: was ppt->C_ell
+                     with wrong stride num_q_collision causing wrong data when index_q >= num_q_collision) */
                   ppv->y[ppv->index_pt_psi0_ncdm1+index_pt] =
                     2./5.*k*tau_ncdm*(q/epsilon*ppv->y[ppv->index_pt_psi0_ncdm1+index_pt-1]-
-                      dlnf0_dlnq*metric_shear/3./k)/ppt->C_ell[ppt->num_q_collision*2+index_q];  
+                      dlnf0_dlnq*metric_shear/3./k)/ppt->C_ell_ncdm[n_ncdm][2*ppv->q_size_ncdm[n_ncdm]+index_q];
                   }
                   else if ((2 < l) && (l < 5)){
                   ppv->y[ppv->index_pt_psi0_ncdm1+index_pt] = l/(l+1.)*qk_div_epsilon*tau_ncdm*
-                    ppv->y[ppv->index_pt_psi0_ncdm1+index_pt-1]/ppt->C_ell[ppt->num_q_collision*l+index_q];
+                    ppv->y[ppv->index_pt_psi0_ncdm1+index_pt-1]/ppt->C_ell_ncdm[n_ncdm][l*ppv->q_size_ncdm[n_ncdm]+index_q];
                   }
                   else{
                     ppv->y[ppv->index_pt_psi0_ncdm1+index_pt] = 0.;
@@ -5353,16 +5382,18 @@ int perturb_approximations(
   tau_h = 1./(ppw->pvecback[pba->index_bg_H]*ppw->pvecback[pba->index_bg_a]);
 
   // DC: HERE!
+  /* [AM/DC] Bug fix: compute tau_ur and tau_ncdm separately so that tau_ncdm
+     uses Gamma_ncdm1 (not Gamma_ur) when both species are present */
   if (pba->interacting_nu!=0){
     if (pba->has_ur==_TRUE_){
-      tau_nu = 1./(ppw->pvecback[pba->index_bg_Gamma_ur]);
+      tau_ur = 1./(ppw->pvecback[pba->index_bg_Gamma_ur]);
+      tau_nu = tau_ur;
     }
-    if ((pba->has_ur==_FALSE_)&&(pba->has_ncdm==_TRUE_)){
-      tau_nu = 1./(ppw->pvecback[pba->index_bg_Gamma_ncdm1]);
+    if (pba->has_ncdm==_TRUE_){
+      tau_ncdm = 1./(ppw->pvecback[pba->index_bg_Gamma_ncdm1]);
+      if (pba->has_ur==_FALSE_) tau_nu = tau_ncdm;
     }
   }
-  tau_ur = tau_nu;
-  tau_ncdm = tau_nu;
 
   /** - for scalar modes: */
 
@@ -5625,6 +5656,7 @@ int perturb_timescale(
   pth = pppaw->pth;
   ppt = pppaw->ppt;
   ppw = pppaw->ppw;
+
   pvecback = ppw->pvecback;
   pvecthermo = ppw->pvecthermo;
 
@@ -5796,16 +5828,18 @@ int perturb_einstein(
   s2_squared = 1.-3.*pba->K/k2;
 
   // DC: HERE!
+  /* [AM/DC] Bug fix: compute tau_ur and tau_ncdm separately so that tau_ncdm
+     uses Gamma_ncdm1 (not Gamma_ur) when both species are present */
   if (pba->interacting_nu!=0){
     if (pba->has_ur==_TRUE_){
-      tau_nu = 1./(ppw->pvecback[pba->index_bg_Gamma_ur]);
+      tau_ur = 1./(ppw->pvecback[pba->index_bg_Gamma_ur]);
+      tau_nu = tau_ur;
     }
-    if ((pba->has_ur==_FALSE_)&&(pba->has_ncdm==_TRUE_)){
-      tau_nu = 1./(ppw->pvecback[pba->index_bg_Gamma_ncdm1]);
+    if (pba->has_ncdm==_TRUE_){
+      tau_ncdm = 1./(ppw->pvecback[pba->index_bg_Gamma_ncdm1]);
+      if (pba->has_ur==_FALSE_) tau_nu = tau_ncdm;
     }
   }
-  tau_ur = tau_nu;
-  tau_ncdm = tau_nu;
 
   /** - sum up perturbations from all species */
   class_call(perturb_total_stress_energy(ppr,pba,pth,ppt,index_md,k,y,ppw),
@@ -5932,8 +5966,10 @@ int perturb_einstein(
               epsilon = sqrt(q2+pba->M_ncdm[n_ncdm]*pba->M_ncdm[n_ncdm]*a2);
 
               // Setting shear term accordingly to TCA and interaction
+              /* [AM/DC] use pre-interpolated C_ell_ncdm[l*nq+index_q] (Bug fix: was ppt->C_ell
+                 with wrong stride num_q_collision causing wrong data when index_q >= num_q_collision) */
                 rho_plus_p_shear_ncdm += q2*q2/epsilon*pba->w_ncdm[n_ncdm][index_q]*
-                  tau_ncdm/ppt->C_ell[ppt->num_q_collision*2+index_q]*(k*q/epsilon*y[idx+1]*2./5. +
+                  tau_ncdm/ppt->C_ell_ncdm[n_ncdm][2*ppw->pv->q_size_ncdm[n_ncdm]+index_q]*(k*q/epsilon*y[idx+1]*2./5. +
                     - 2.*k2*ppw->pvecmetric[ppw->index_mt_alpha]*pba->dlnf0_dlnq_ncdm[n_ncdm][index_q]/15.);        
 
               //Jump to next momentum bin:
@@ -6076,16 +6112,18 @@ int perturb_total_stress_energy(
   //DC: HERE
   double tau_nu,tau_ur,tau_ncdm;
 
+  /* [AM/DC] Bug fix: compute tau_ur and tau_ncdm separately so that tau_ncdm
+     uses Gamma_ncdm1 (not Gamma_ur) when both species are present */
   if (pba->interacting_nu!=0){
     if (pba->has_ur==_TRUE_){
-      tau_nu = 1./(ppw->pvecback[pba->index_bg_Gamma_ur]);
+      tau_ur = 1./(ppw->pvecback[pba->index_bg_Gamma_ur]);
+      tau_nu = tau_ur;
     }
-    if ((pba->has_ur==_FALSE_)&&(pba->has_ncdm==_TRUE_)){
-      tau_nu = 1./(ppw->pvecback[pba->index_bg_Gamma_ncdm1]);
+    if (pba->has_ncdm==_TRUE_){
+      tau_ncdm = 1./(ppw->pvecback[pba->index_bg_Gamma_ncdm1]);
+      if (pba->has_ur==_FALSE_) tau_nu = tau_ncdm;
     }
   }
-  tau_ur = tau_nu;
-  tau_ncdm = tau_nu;
 
   /** - wavenumber and scale factor related quantities */
 
@@ -6320,8 +6358,10 @@ int perturb_total_stress_energy(
               }
               else{
                 if (ppt->gauge == newtonian) {
+                  /* [AM/DC] use pre-interpolated C_ell_ncdm[l*nq+index_q] (Bug fix: was ppt->C_ell
+                     with wrong stride num_q_collision causing wrong data when index_q >= num_q_collision) */
                   rho_plus_p_shear_ncdm += q2*q2/epsilon*pba->w_ncdm[n_ncdm][index_q]*
-                    tau_ncdm/ppt->C_ell[ppt->num_q_collision*2+index_q]*(k*q/epsilon*y[idx+1]*2./5.);
+                    tau_ncdm/ppt->C_ell_ncdm[n_ncdm][2*ppw->pv->q_size_ncdm[n_ncdm]+index_q]*(k*q/epsilon*y[idx+1]*2./5.);
                 }
                 if (ppt->gauge == synchronous) {
                   rho_plus_p_shear_ncdm += 0.; // corrected in einstein
@@ -7204,16 +7244,18 @@ int perturb_print_variables(double tau,
   H = pvecback[pba->index_bg_H];
 
   // DC: HERE!
+  /* [AM/DC] Bug fix: compute tau_ur and tau_ncdm separately so that tau_ncdm
+     uses Gamma_ncdm1 (not Gamma_ur) when both species are present */
   if (pba->interacting_nu!=0){
     if (pba->has_ur==_TRUE_){
-      tau_nu = 1./(pvecback[pba->index_bg_Gamma_ur]);
+      tau_ur = 1./(pvecback[pba->index_bg_Gamma_ur]);
+      tau_nu = tau_ur;
     }
-    if ((pba->has_ur==_FALSE_)&&(pba->has_ncdm==_TRUE_)){
-      tau_nu = 1./(pvecback[pba->index_bg_Gamma_ncdm1]);
+    if (pba->has_ncdm==_TRUE_){
+      tau_ncdm = 1./(pvecback[pba->index_bg_Gamma_ncdm1]);
+      if (pba->has_ur==_FALSE_) tau_nu = tau_ncdm;
     }
   }
-  tau_ur = tau_nu;
-  tau_ncdm = tau_nu;
 
   if (pba->has_ncdm == _TRUE_){
     class_alloc(delta_ncdm, sizeof(double)*pba->N_ncdm,error_message);
@@ -7393,12 +7435,14 @@ int perturb_print_variables(double tau,
                 rho_plus_p_shear_ncdm += q2*q2/epsilon*pba->w_ncdm[n_ncdm][index_q]*y[idx+2];
               }
               else{
+                /* [AM/DC] use pre-interpolated C_ell_ncdm[l*nq+index_q] (Bug fix: was ppt->C_ell
+                   with wrong stride num_q_collision causing wrong data when index_q >= num_q_collision) */
                 if (ppt->gauge == newtonian){
-                  rho_plus_p_shear_ncdm += 2./5.*q2*q2*q*k*tau_ncdm/epsilon/epsilon*pba->w_ncdm[n_ncdm][index_q]*y[idx+1]/ppt->C_ell[ppt->num_q_collision*2+index_q];                  
+                  rho_plus_p_shear_ncdm += 2./5.*q2*q2*q*k*tau_ncdm/epsilon/epsilon*pba->w_ncdm[n_ncdm][index_q]*y[idx+1]/ppt->C_ell_ncdm[n_ncdm][2*ppw->pv->q_size_ncdm[n_ncdm]+index_q];
                 }
                 if (ppt->gauge == synchronous){
                   rho_plus_p_shear_ncdm += 2./5.*q2*q2*q*k*tau_ncdm/epsilon/epsilon*pba->w_ncdm[n_ncdm][index_q]*(y[idx+1] -
-                    epsilon/k/q*pba->dlnf0_dlnq_ncdm[n_ncdm][index_q]*k*k*alpha/3.)/ppt->C_ell[ppt->num_q_collision*2+index_q];                  
+                    epsilon/k/q*pba->dlnf0_dlnq_ncdm[n_ncdm][index_q]*k*k*alpha/3.)/ppt->C_ell_ncdm[n_ncdm][2*ppw->pv->q_size_ncdm[n_ncdm]+index_q];
                 }
 
               }
@@ -7812,6 +7856,10 @@ int perturb_derivs(double tau,
   ppt = pppaw->ppt;
   ppw = pppaw->ppw;
 
+  if ((pba->interacting_nu != 0) && (ppt->num_ell_collision > 0)) {
+    l_max_ur_int = ppt->num_ell_collision-1;
+  }
+
   s_l = ppw->s_l;
   pvecback = ppw->pvecback;
   pvecthermo = ppw->pvecthermo;
@@ -7861,16 +7909,18 @@ int perturb_derivs(double tau,
   R = 4./3. * pvecback[pba->index_bg_rho_g]/pvecback[pba->index_bg_rho_b];
 
   // DC: HERE!
+  /* [AM/DC] Bug fix: compute tau_ur and tau_ncdm separately so that tau_ncdm
+     uses Gamma_ncdm1 (not Gamma_ur) when both species are present */
   if (pba->interacting_nu!=0){
     if (pba->has_ur==_TRUE_){
-      tau_nu = 1./(pvecback[pba->index_bg_Gamma_ur]);
+      tau_ur = 1./(pvecback[pba->index_bg_Gamma_ur]);
+      tau_nu = tau_ur;
     }
-    if ((pba->has_ur==_FALSE_)&&(pba->has_ncdm==_TRUE_)){
-      tau_nu = 1./(pvecback[pba->index_bg_Gamma_ncdm1]);
+    if (pba->has_ncdm==_TRUE_){
+      tau_ncdm = 1./(pvecback[pba->index_bg_Gamma_ncdm1]);
+      if (pba->has_ur==_FALSE_) tau_nu = tau_ncdm;
     }
   }
-  tau_ur = tau_nu;
-  tau_ncdm = tau_nu;
 
   /** - Compute 'generalised cotK function of argument \f$ \sqrt{|K|}*\tau \f$, for closing hierarchy.
       (see equation 2.34 in arXiv:1305.3261): */
@@ -8804,7 +8854,8 @@ int perturb_derivs(double tau,
                 dy[idx] = -qk_div_epsilon*y[idx+1]+metric_continuity*dlnf0_dlnq/3.;
 
                 /** - -----> ncdm TCA "shear" for given momentum bin */
-                tca_psi2_ncdm1 = k*tau_ncdm*2./5.*(q*y[idx+1]/epsilon-metric_shear*dlnf0_dlnq/3./k)/ppt->C_ell[pv->q_size_ncdm[n_ncdm]*2+index_q];
+                /* [AM/DC] use pre-interpolated C_ell_ncdm[l*nq+index_q] instead of raw C_ell */
+                tca_psi2_ncdm1 = k*tau_ncdm*2./5.*(q*y[idx+1]/epsilon-metric_shear*dlnf0_dlnq/3./k)/ppt->C_ell_ncdm[n_ncdm][2*pv->q_size_ncdm[n_ncdm]+index_q];
 
                 /** - -----> ncdm velocity for given momentum bin */
                 // printf("ppw->tca_psi2_ncdm1[n_ncdm][index_q]: %e\n",ppw->tca_psi2_ncdm1[n_ncdm][index_q]);
@@ -8847,17 +8898,19 @@ int perturb_derivs(double tau,
 
                 /** - -----> ncdm shear for given momentum bin */
 
+                /* [AM/DC] use pre-interpolated C_ell_ncdm[l*nq+index_q] (Bug fix: was ppt->C_ell
+                   with wrong stride pv->q_size_ncdm causing OOB access for l > num_q_collision) */
                 dy[idx+2] = qk_div_epsilon/5.0*(2*s_l[2]*y[idx+1]-3.*s_l[3]*y[idx+3])
                   -s_l[2]*metric_shear*2./15.*dlnf0_dlnq
                   // interaction term
-                  -ppt->C_ell[pv->q_size_ncdm[n_ncdm]*2+index_q]*y[idx+2]/tau_ncdm;
+                  -ppt->C_ell_ncdm[n_ncdm][2*pv->q_size_ncdm[n_ncdm]+index_q]*y[idx+2]/tau_ncdm;
 
                 /** - -----> ncdm l>3 for given momentum bin */
 
                 for(l=3; l<pv->l_max_ncdm[n_ncdm]; l++){
                   dy[idx+l] = qk_div_epsilon/(2.*l+1.0)*(l*s_l[l]*y[idx+(l-1)]-(l+1.)*s_l[l+1]*y[idx+(l+1)])
                     // interaction term
-                    -ppt->C_ell[pv->q_size_ncdm[n_ncdm]*l+index_q]*y[idx+l]/tau_ncdm;
+                    -ppt->C_ell_ncdm[n_ncdm][l*pv->q_size_ncdm[n_ncdm]+index_q]*y[idx+l]/tau_ncdm;
                 }
 
                 /** - -----> ncdm lmax for given momentum bin (truncation as in Ma and Bertschinger)
@@ -8865,7 +8918,7 @@ int perturb_derivs(double tau,
 
                 dy[idx+l] = qk_div_epsilon*y[idx+l-1]-(1.+l)*k*cotKgen*y[idx+l]
                   // interaction term
-                  -ppt->C_ell[pv->q_size_ncdm[n_ncdm]*l+index_q]*y[idx+l]/tau_ncdm;
+                  -ppt->C_ell_ncdm[n_ncdm][l*pv->q_size_ncdm[n_ncdm]+index_q]*y[idx+l]/tau_ncdm;
 
                 /** - -----> jump to next momentum bin or species */
 
@@ -9699,6 +9752,12 @@ int perturb_collision_C_ell(struct precision * ppr,
                      "could not read value of parameters (num_q,num_ell) in file %s\n",ppr->interacting_C_ell_file_syn);
         }
 
+        class_test((num_q < 1) || (num_ell < 1),
+                   ppt->error_message,
+                   "invalid collision table dimensions in input file: num_q=%d num_ell=%d",
+                   num_q,
+                   num_ell);
+
         class_alloc(ppt->q_collision,num_q*sizeof(double),ppt->error_message);
         class_alloc(ppt->ell,num_ell*sizeof(double),ppt->error_message);
         class_alloc(ppt->C_ell,num_ell*num_q*sizeof(double),ppt->error_message);
@@ -9709,6 +9768,10 @@ int perturb_collision_C_ell(struct precision * ppr,
 
       }
       else {
+        class_test(array_line >= num_ell*num_q,
+                   ppt->error_message,
+                   "too many data lines in collision table file (expected %d)",
+                   num_ell*num_q);
 
         /* read (q_collision, ell, C_ell) */
         if (ppt->gauge == newtonian){
@@ -9739,7 +9802,14 @@ int perturb_collision_C_ell(struct precision * ppr,
 
   fclose(fA);
 
+  class_test(array_line != num_q*num_ell,
+             ppt->error_message,
+             "collision table malformed: expected %d rows, read %d",
+             num_q*num_ell,
+             array_line);
+
   ppt->num_q_collision = num_q;
+  ppt->num_ell_collision = num_ell; /* [AM/DC] save for interpolation */
 
   return _SUCCESS_;
 
@@ -9790,11 +9860,26 @@ int perturb_collision_alpha_ell(struct precision * ppr,
                    ppt->error_message,
                    "could not read value of parameters (num_ell) in file %s\n",ppr->interacting_alpha_ell_file);
 
+        class_test(num_ell < 1,
+                   ppt->error_message,
+                   "invalid alpha_ell table dimensions in input file: num_ell=%d",
+                   num_ell);
+
+        class_test((ppt->num_ell_collision > 0) && (num_ell != ppt->num_ell_collision),
+                   ppt->error_message,
+                   "mismatch between C_ell and alpha_ell tables: num_ell(C_ell)=%d, num_ell(alpha_ell)=%d",
+                   ppt->num_ell_collision,
+                   num_ell);
+
         class_alloc(ppt->ell_2,num_ell*sizeof(double),ppt->error_message);
         class_alloc(ppt->alpha_ell,num_ell*sizeof(double),ppt->error_message);
         array_line=0;
       }
       else {
+        class_test(array_line >= num_ell,
+                   ppt->error_message,
+                   "too many data lines in alpha_ell file (expected %d)",
+                   num_ell);
 
         /* read (q_collision, ell, alpha_ell) */
         class_test(sscanf(line,"%d %lg",
@@ -9813,21 +9898,143 @@ int perturb_collision_alpha_ell(struct precision * ppr,
 
   fclose(fA);
 
+  class_test(array_line != num_ell,
+             ppt->error_message,
+             "alpha_ell table malformed: expected %d rows, read %d",
+             num_ell,
+             array_line);
+
   return _SUCCESS_;
 
 }
 
-// DC: HERE!
-int perturbations_collision_free(struct perturbs * ppt){
-  /** - deallocate arrays */
-  free(ppt->q_collision);
-  free(ppt->ell);
-  free(ppt->C_ell);
-  free(ppt->ddC_ell);
-  free(ppt->ell_2);
-  free(ppt->alpha_ell);
-  // free(ppt->C_ell_at_q_collision);
-  // free(ppt->ddC_ell_at_q_collision);
-  // free(ppt->alphal);
+/**
+ * [AM/DC] perturb_collision_interpolate_ncdm:
+ *
+ * Re-sample the raw collision table ppt->C_ell (defined on the collision
+ * q-grid of size num_q_collision) onto the perturbation q-grid of each
+ * ncdm species (pba->q_ncdm[n_ncdm], size pba->q_size_ncdm[n_ncdm]).
+ *
+ * Result stored in ppt->C_ell_ncdm[n_ncdm][l * q_size + index_q].
+ * Uses linear interpolation; extrapolates (clamps) outside the range.
+ *
+ * Must be called after perturb_collision_C_ell() and after background_init().
+ */
+int perturb_collision_interpolate_ncdm(struct background * pba,
+                                       struct perturbs * ppt) {
 
+  int n_ncdm, l, index_q, index_qc;
+  int nq, nqc, nell;
+  double q, q_lo, q_hi, C_lo, C_hi, frac;
+
+  if (pba->has_ncdm == _FALSE_) return _SUCCESS_;
+
+  nell = ppt->num_ell_collision;
+  nqc  = ppt->num_q_collision;
+
+  class_test((nqc < 2) || (nell < 1),
+             ppt->error_message,
+             "collision interpolation requires at least two q-bins and one ell-bin, got num_q=%d num_ell=%d",
+             nqc,
+             nell);
+
+  class_test((ppt->q_collision == NULL) || (ppt->C_ell == NULL),
+             ppt->error_message,
+             "collision interpolation called with uninitialized collision arrays");
+
+  /* Allocate the pointer array (one entry per ncdm species) */
+  class_calloc(ppt->C_ell_ncdm, pba->N_ncdm, sizeof(double *), ppt->error_message);
+
+  for (n_ncdm = 0; n_ncdm < pba->N_ncdm; n_ncdm++) {
+
+    nq = pba->q_size_ncdm[n_ncdm];
+    class_test(nq < 1,
+               ppt->error_message,
+               "invalid ncdm q-grid size for species %d: q_size=%d",
+               n_ncdm,
+               nq);
+
+    class_alloc(ppt->C_ell_ncdm[n_ncdm], nell * nq * sizeof(double), ppt->error_message);
+
+    for (l = 0; l < nell; l++) {
+      for (index_q = 0; index_q < nq; index_q++) {
+
+        q = pba->q_ncdm[n_ncdm][index_q];
+
+        /* Find the surrounding collision q-bins (linear search over nqc<=11 points) */
+        if (q <= ppt->q_collision[0]) {
+          /* Extrapolate: clamp to first bin */
+          ppt->C_ell_ncdm[n_ncdm][l * nq + index_q] = ppt->C_ell[l * nqc + 0];
+        }
+        else if (q >= ppt->q_collision[nqc - 1]) {
+          /* Extrapolate: clamp to last bin */
+          ppt->C_ell_ncdm[n_ncdm][l * nq + index_q] = ppt->C_ell[l * nqc + (nqc - 1)];
+        }
+        else {
+          /* Linear interpolation */
+          for (index_qc = 0; index_qc < nqc - 1; index_qc++) {
+            if (q < ppt->q_collision[index_qc + 1]) break;
+          }
+          q_lo = ppt->q_collision[index_qc];
+          q_hi = ppt->q_collision[index_qc + 1];
+          class_test(q_hi == q_lo,
+                     ppt->error_message,
+                     "collision interpolation failed: repeated q values at indices %d and %d",
+                     index_qc,
+                     index_qc+1);
+          C_lo = ppt->C_ell[l * nqc + index_qc];
+          C_hi = ppt->C_ell[l * nqc + index_qc + 1];
+          frac = (q - q_lo) / (q_hi - q_lo);
+          ppt->C_ell_ncdm[n_ncdm][l * nq + index_q] = C_lo + frac * (C_hi - C_lo);
+        }
+      }
+    }
+  }
+
+  return _SUCCESS_;
+}
+
+// DC: HERE!
+int perturbations_collision_free(struct background * pba, struct perturbs * ppt){
+  int n_ncdm;
+  /** - deallocate arrays */
+  if (ppt->q_collision != NULL) {
+    free(ppt->q_collision);
+    ppt->q_collision = NULL;
+  }
+  if (ppt->ell != NULL) {
+    free(ppt->ell);
+    ppt->ell = NULL;
+  }
+  if (ppt->C_ell != NULL) {
+    free(ppt->C_ell);
+    ppt->C_ell = NULL;
+  }
+  if (ppt->ddC_ell != NULL) {
+    free(ppt->ddC_ell);
+    ppt->ddC_ell = NULL;
+  }
+  if (ppt->ell_2 != NULL) {
+    free(ppt->ell_2);
+    ppt->ell_2 = NULL;
+  }
+  if (ppt->alpha_ell != NULL) {
+    free(ppt->alpha_ell);
+    ppt->alpha_ell = NULL;
+  }
+  /* [AM/DC] free the interpolated C_ell_ncdm table */
+  if ((pba->has_ncdm == _TRUE_) && (ppt->C_ell_ncdm != NULL)) {
+    for (n_ncdm = 0; n_ncdm < pba->N_ncdm; n_ncdm++) {
+      if (ppt->C_ell_ncdm[n_ncdm] != NULL) {
+        free(ppt->C_ell_ncdm[n_ncdm]);
+      }
+    }
+    free(ppt->C_ell_ncdm);
+    ppt->C_ell_ncdm = NULL;
+  }
+
+  ppt->num_q_collision = 0;
+  ppt->num_ell_collision = 0;
+
+  return _SUCCESS_;
 }
