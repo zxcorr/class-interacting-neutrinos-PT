@@ -3003,8 +3003,11 @@ int perturbations_solve(
 
 
   auto generic_evolver = &(evolver_ndf15);
-  /* [AM /DC] neutrino interaction rate at initial time */
-  double Gamma_nu = 0.;
+  /* [AM /DC] ---start-- neutrino interaction rate at initial time */
+  //double Gamma_nu = 0.;
+  double Gamma_ur = 0.;
+  double Gamma_ncdm = 0.;
+  /* [AM /DC] --end-- */
 
   /* Related to the perturbation output */
   int (*perhaps_print_variables)(double, double*, double*, void*, char*);
@@ -3063,26 +3066,29 @@ int perturbations_solve(
      conditions on kappa' and on k/aH */
   /* [AM / DC] --start-- check initial time is compatible with neutrino TCA */
   if (pba->interacting_nu != 0.) {
-    if (pba->has_ur == _TRUE_)
-      Gamma_nu = ppw->pvecback[pba->index_bg_Gamma_ur];
-    else if (pba->has_ncdm == _TRUE_)
-      Gamma_nu = ppw->pvecback[pba->index_bg_Gamma_ncdm1];
 
-    if (pba->has_ur == _TRUE_)
-      class_test(ppw->pvecback[pba->index_bg_a]*ppw->pvecback[pba->index_bg_H]/Gamma_nu >
+    if (pba->has_ur == _TRUE_) {
+      Gamma_ur = ppw->pvecback[pba->index_bg_Gamma_ur];
+
+      class_test(ppw->pvecback[pba->index_bg_a] *
+                 ppw->pvecback[pba->index_bg_H] / Gamma_ur >
                  ppr->start_small_k_at_tau_nu_over_tau_h,
                  ppt->error_message,
-                 "your choice of initial time is inappropriate for neutrino TCA. Increase 'start_small_k_at_tau_nu_over_tau_h' up to at least %g, or decrease 'a_ini_over_a_today_default'\n",
-                 ppw->pvecback[pba->index_bg_a]*ppw->pvecback[pba->index_bg_H]/Gamma_nu);
+                 "your choice of initial time is inappropriate for UR neutrino TCA. Increase 'start_small_k_at_tau_nu_over_tau_h' or decrease 'a_ini_over_a_today_default'\n");
+    }
 
-    if (pba->has_ncdm == _TRUE_)
-      class_test(ppw->pvecback[pba->index_bg_a]*ppw->pvecback[pba->index_bg_H]/Gamma_nu >
+    if (pba->has_ncdm == _TRUE_) {
+      Gamma_ncdm = ppw->pvecback[pba->index_bg_Gamma_ncdm1];
+
+      class_test(ppw->pvecback[pba->index_bg_a] *
+                 ppw->pvecback[pba->index_bg_H] / Gamma_ncdm >
                  ppr->start_small_k_at_tau_nu_over_tau_h,
                  ppt->error_message,
-                 "your choice of initial time is inappropriate for neutrino TCA. Increase 'start_small_k_at_tau_nu_over_tau_h' up to at least %g, or decrease 'a_ini_over_a_today_default'\n",
-                 ppw->pvecback[pba->index_bg_a]*ppw->pvecback[pba->index_bg_H]/Gamma_nu);
-  }    
+                 "your choice of initial time is inappropriate for NCDM neutrino TCA. Increase 'start_small_k_at_tau_nu_over_tau_h' or decrease 'a_ini_over_a_today_default'\n");
+    }
+  }
   /* [AM / DC] --end-- */  
+  
   class_test(ppw->pvecback[pba->index_bg_a]*
              ppw->pvecback[pba->index_bg_H]/
              ppw->pvecthermo[pth->index_th_dkappa] >
@@ -3130,11 +3136,17 @@ int perturbations_solve(
       
     /* [AM / DC] refresh Gamma_nu at tau_mid for correct TCA initial-time test */
     if (pba->interacting_nu != 0.) {
-      if (pba->has_ur == _TRUE_)
-        Gamma_nu = ppw->pvecback[pba->index_bg_Gamma_ur];
-      else if (pba->has_ncdm == _TRUE_)
-        Gamma_nu = ppw->pvecback[pba->index_bg_Gamma_ncdm1];
-    }      
+      Gamma_ur = 0.;
+      Gamma_ncdm = 0.;
+
+      if (pba->has_ur == _TRUE_) {
+        Gamma_ur = ppw->pvecback[pba->index_bg_Gamma_ur];
+      }
+
+      if (pba->has_ncdm == _TRUE_) {
+        Gamma_ncdm = ppw->pvecback[pba->index_bg_Gamma_ncdm1];
+      }
+    }   
 
     /* if there are non-cold relics, check that they are relativistic enough */
     if (pba->has_ncdm == _TRUE_) {
@@ -3173,17 +3185,21 @@ int perturbations_solve(
   //check if massless neutrinos are in the TCA regime    
     if (is_early_enough == _TRUE_) {
       if (pba->interacting_nu != 0.) {
+
         if (pba->has_ur == _TRUE_) {
-          if ((ppw->pvecback[pba->index_bg_a]*ppw->pvecback[pba->index_bg_H]/Gamma_nu >
+          if ((ppw->pvecback[pba->index_bg_a] *
+               ppw->pvecback[pba->index_bg_H] / Gamma_ur >
                ppr->start_small_k_at_tau_nu_over_tau_h) ||
-              (k/ppw->pvecback[pba->index_bg_a]/ppw->pvecback[pba->index_bg_H] >
+              (k / ppw->pvecback[pba->index_bg_a] / ppw->pvecback[pba->index_bg_H] >
                ppr->start_large_k_at_tau_h_over_tau_k))
             is_early_enough = _FALSE_;
         }
+
         if (pba->has_ncdm == _TRUE_) {
-          if ((ppw->pvecback[pba->index_bg_a]*ppw->pvecback[pba->index_bg_H]/Gamma_nu >
+          if ((ppw->pvecback[pba->index_bg_a] *
+               ppw->pvecback[pba->index_bg_H] / Gamma_ncdm >
                ppr->start_small_k_at_tau_nu_over_tau_h) ||
-              (k/ppw->pvecback[pba->index_bg_a]/ppw->pvecback[pba->index_bg_H] >
+              (k / ppw->pvecback[pba->index_bg_a] / ppw->pvecback[pba->index_bg_H] >
                ppr->start_large_k_at_tau_h_over_tau_k))
             is_early_enough = _FALSE_;
         }
@@ -6327,6 +6343,24 @@ int perturbations_approximations(
   tau_h = 1./(ppw->pvecback[pba->index_bg_H]*ppw->pvecback[pba->index_bg_a]);
 
   /* [AM / DC] --start-- compute neutrino interaction timescale*/
+  
+  tau_nu = 1.e100;
+  tau_ur = 1.e100;
+  tau_ncdm = 1.e100;
+
+  if (pba->interacting_nu != 0.) {
+  
+    if (pba->has_ur == _TRUE_) {
+      tau_ur = 1./ppw->pvecback[pba->index_bg_Gamma_ur];
+      if (tau_ur < tau_nu) tau_nu = tau_ur;
+    }
+
+    if (pba->has_ncdm == _TRUE_) {
+      tau_ncdm = 1./ppw->pvecback[pba->index_bg_Gamma_ncdm1];
+      if (tau_ncdm < tau_nu) tau_nu = tau_ncdm;
+    }
+  }  
+  /*
   if (pba->interacting_nu != 0.) {
     if (pba->has_ur == _TRUE_) {
       tau_nu = 1./ppw->pvecback[pba->index_bg_Gamma_ur];
@@ -6336,7 +6370,7 @@ int perturbations_approximations(
     }
     tau_ur   = tau_nu;
     tau_ncdm = tau_nu;
-  }
+  }*/
   /* [AM / DC] --end--*/    
   /** - for scalar modes: */
 
@@ -6513,28 +6547,31 @@ int perturbations_approximations(
 
         /* [AM / DC] TCA off: full hierarchy or fluid, conditioned on tau_nu */
         ppw->approx[ppw->index_ap_nu_tca] = (int)nu_tca_off;
-
+        
         if (pba->has_ncdm == _TRUE_) {
           if ((tau/tau_k > ppr->ncdm_fluid_trigger_tau_over_tau_k) &&
-              (tau_nu/tau_k > 1.015*ppr->full_hierarchy_trigger_tau_nu_over_tau_k) &&
+              (tau_ncdm/tau_k > ppr->full_hierarchy_trigger_tau_nu_over_tau_k) &&
               (ppr->ncdm_fluid_approximation != ncdmfa_none)) {
-            ppw->approx[ppw->index_ap_ncdmfa] = (int)ncdmfa_on;
+            ppw->approx[ppw->index_ap_ncdmfa] = (int) ncdmfa_on;
           }
           else {
-            ppw->approx[ppw->index_ap_ncdmfa] = (int)ncdmfa_off;
+            ppw->approx[ppw->index_ap_ncdmfa] = (int) ncdmfa_off;
           }
-        }
+        }        
 
         if (pba->has_ur == _TRUE_) {
           if ((tau/tau_k > ppr->ur_fluid_trigger_tau_over_tau_k) &&
-              (tau_nu/tau_k > ppr->full_hierarchy_trigger_tau_nu_over_tau_k) &&
+              (tau_ur/tau_k > ppr->full_hierarchy_trigger_tau_nu_over_tau_k) &&
               (ppr->ur_fluid_approximation != ufa_none)) {
-            ppw->approx[ppw->index_ap_ufa] = (int)ufa_on;
+            ppw->approx[ppw->index_ap_ufa] = (int) ufa_on;
           }
           else {
-            ppw->approx[ppw->index_ap_ufa] = (int)ufa_off;
+            ppw->approx[ppw->index_ap_ufa] = (int) ufa_off;
           }
-        }
+        }        
+
+
+        
       }
     }
   }
@@ -9165,7 +9202,7 @@ int perturbations_derivs(double tau,
   s2_squared = 1.-3.*pba->K/k2;
 
   /* [AM / DC] --start-- compute neutrino interaction timescale */
-  if (pba->interacting_nu != 0.) {
+  /*if (pba->interacting_nu != 0.) {
     if (pba->has_ur == _TRUE_) {
       tau_nu = 1./pvecback[pba->index_bg_Gamma_ur];
     }
@@ -9174,7 +9211,38 @@ int perturbations_derivs(double tau,
     }
     tau_ur   = tau_nu;
     tau_ncdm = tau_nu;
-  }    
+  } */
+  tau_nu = 1.e100;
+  tau_ur = 1.e100;
+  tau_ncdm = 1.e100;
+
+  if (pba->interacting_nu != 0.) {
+ 
+    if (pba->has_ur == _TRUE_) {
+      tau_ur = 1./pvecback[pba->index_bg_Gamma_ur];
+      if (tau_ur < tau_nu) tau_nu = tau_ur;
+    }
+
+    if (pba->has_ncdm == _TRUE_) {
+      tau_ncdm = 1./pvecback[pba->index_bg_Gamma_ncdm1];
+      if (tau_ncdm < tau_nu) tau_nu = tau_ncdm;
+    }
+  }  
+  /*
+  if (pba->interacting_nu != 0.) {
+    tau_ur = 0.;
+    tau_ncdm = 0.;
+
+    if (pba->has_ur == _TRUE_) {
+      tau_ur = 1./pvecback[pba->index_bg_Gamma_ur];
+    }
+
+    if (pba->has_ncdm == _TRUE_) {
+      tau_ncdm = 1./pvecback[pba->index_bg_Gamma_ncdm1];
+    }
+  } 
+  */
+  
   /* [AM / DC] --end-- */
     
   /** - for scalar modes: */
@@ -9828,17 +9896,31 @@ int perturbations_derivs(double tau,
                   +2./3.*(y[pv->index_pt_theta_ur]+metric_ufa_class);
             }
           }
-          else {/* [AM / DC] if ur TCA approximation is on (nu_tca_on): TCA shear and theta only */            
-            /* [l=2] -----> ur TCA shear */  
-            tca_shear_ur = tau_ur*4./15.*(y[pv->index_pt_theta_ur]+metric_shear)/ppt->alpha_ell[2];
-            ppw->tca_shear_ur = tca_shear_ur; /* store in workspace for vector_init handoff */
-            /* [l=1] -----> ur velocity */
-            dy[pv->index_pt_theta_ur] =
-              // standard term with extra coefficient (3 ceff2_ur), normally equal to one  
-              k2*(ppt->three_ceff2_ur*y[pv->index_pt_delta_ur]/4.-s2_squared*tca_shear_ur) + metric_euler
-              // non-standard term, non-zero if ceff2_ur not 1/3  
-              -(1.-ppt->three_ceff2_ur)*a_prime_over_a*y[pv->index_pt_theta_ur];
-          }
+            else {/* [AM / DC] if ur TCA approximation is on (nu_tca_on): TCA shear and theta only */
+                    /* [l=2] -----> ur TCA shear */
+                    tca_shear_ur = tau_ur*4./15.*(y[pv->index_pt_theta_ur]+metric_shear)/ppt->alpha_ell[2];
+                    ppw->tca_shear_ur = tca_shear_ur; /* store in workspace for vector_init handoff */
+
+                    /* [l=1] -----> ur velocity */
+                    dy[pv->index_pt_theta_ur] =
+                      // standard term with extra coefficient (3 ceff2_ur), normally equal to one
+                      k2*(ppt->three_ceff2_ur*y[pv->index_pt_delta_ur]/4.-s2_squared*tca_shear_ur) + metric_euler
+                      // non-standard term, non-zero if ceff2_ur not 1/3
+                      -(1.-ppt->three_ceff2_ur)*a_prime_over_a*y[pv->index_pt_theta_ur];
+
+                    // =========================================================================
+                    // --> INSERT THE FIX RIGHT HERE: Zero out tightly-coupled higher multipoles
+                    // =========================================================================
+                    dy[pv->index_pt_shear_ur] = 0.0;
+                    if (ppw->approx[ppw->index_ap_ufa] == (int)ufa_off) {
+                      dy[pv->index_pt_l3_ur] = 0.0;
+                      for (l = 4; l <= pv->l_max_ur; l++) {
+                        dy[pv->index_pt_delta_ur + l] = 0.0;
+                      }
+                    }
+                    // =========================================================================
+
+                  }
         }
       }
     }
